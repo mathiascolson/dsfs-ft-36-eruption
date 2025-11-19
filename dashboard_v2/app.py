@@ -46,7 +46,7 @@ station_coords = {
 # -------------------------------
 st.sidebar.image(
     "https://media.gettyimages.com/id/110834060/fr/photo/reunion-eruption-of-the-piton-de-la-fournaise-in-reunion-on-april-03-2007-piton-de-la.jpg?s=612x612&w=0&k=20&c=32ejXjNKw5GpQf9ypQdWXSHV8BIhbkNW9hw8m9zu9nE=",
-    use_column_width=True
+    use_container_width=True
 )
 st.sidebar.title("Real-Time Alert System")
 
