@@ -13,24 +13,30 @@ DATA_DIR = Path("data")
 # -----------------------------------------------------------
 
 eruptions = {
-    "24 Aug 2015 – 16:50 UTC":{
+    "24 Aoû 2015 – 16:50 UTC": {
         "file": "2015_08_24_19h_50_UTC_pf_aggregated_1min_4Hz.csv",
-        "time": pd.to_datetime("2015-08-24 16:50:00", utc=True)},
+        "time": pd.to_datetime("2015-08-24 16:50:00", utc=True)
+    },
     "11 Sep 2016 – 04:05 UTC": {
         "file": "2016_09_11_06h_41_UTC_pf_aggregated_1min_4Hz.csv",
-        "time": pd.to_datetime("2016-09-11 04:05:00", utc=True)},
+        "time": pd.to_datetime("2016-09-11 04:05:00", utc=True)
+    },
     "25 Oct 2019 – 12:40 UTC": {
         "file": "2019_10_25_12h_40_UTC_pf_aggregated_1min_4Hz.csv",
-        "time": pd.to_datetime("2019-10-25 12:40:00", utc=True)},
-    "07 Dec 2020 – 00:40 UTC": {
+        "time": pd.to_datetime("2019-10-25 12:40:00", utc=True)
+    },
+    "07 Déc 2020 – 00:40 UTC": {
         "file": "2020_12_07_02h_40_UTC_pf_aggregated_1min_4Hz.csv",
-        "time": pd.to_datetime("2020-12-07 00:40:00", utc=True)},
+        "time": pd.to_datetime("2020-12-07 00:40:00", utc=True)
+    },
     "19 Sep 2022 – 06:23 UTC": {
         "file": "2022_09_19_06h_23_UTC_pf_aggregated_1min_4Hz.csv",
-        "time": pd.to_datetime("2022-09-19 06:23:00", utc=True)},
-    "02 Jul 2023 – 04:30 UTC": {
+        "time": pd.to_datetime("2022-09-19 06:23:00", utc=True)
+    },
+    "02 Jui 2023 – 04:30 UTC": {
         "file": "2023_07_02_04h_30_UTC_pf_aggregated_1min_4Hz.csv",
-        "time": pd.to_datetime("2023-07-02 04:30:00", utc=True)},
+        "time": pd.to_datetime("2023-07-02 04:30:00", utc=True)
+    }
 }
 
 # -----------------------------------------------------------

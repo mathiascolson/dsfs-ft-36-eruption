@@ -1,151 +1,468 @@
 # ============================================
-# graphing.py — graphes Plotly du dashboard
+# graphing.py — VERSION FINALE AVEC LÉGENDE "eruption" EN VERT NÉON
 # ============================================
 
+import streamlit as st
+import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
-from constants import eruptions, color_map, rgba_map
+import scipy.signal as scipy_signal
+from constants import eruptions, color_map
+from data_loader import load_eruption_file
 
-# -----------------------------------------------------------
-# 1. Courbe : amplitude moyenne
-# -----------------------------------------------------------
 
-def plot_amplitude(df_compare):
-    fig = go.Figure()
+# ------------------------------------------------------------
+# 1. Chargement et alignement des données sélectionnées
+# ------------------------------------------------------------
+def load_aligned_data(selected_eruptions):
+    frames = []
+    for name in selected_eruptions:
+        df = load_eruption_file(name)
+        info = eruptions[name]
+        df["hours_to_eruption"] = (df["time_min"] - info["time"]).dt.total_seconds() / 3600
+        df = df[(df["hours_to_eruption"] >= -80) & (df["hours_to_eruption"] <= 24)]
+        res = df.set_index("time_min").resample("10min").mean(numeric_only=True).reset_index()
+        res["hours_to_eruption"] = (res["time_min"] - info["time"]).dt.total_seconds() / 3600
+        res["eruption"] = name
+        res["color"] = color_map[name]
+        frames.append(res)
+    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
-    for eruption in df_compare["eruption"].unique():
-        sub = df_compare[df_compare["eruption"] == eruption]
-        c = sub["color"].iloc[0]
 
-        fig.add_trace(go.Scatter(
-            x=sub["hours_to_eruption"],
-            y=sub["amplitude_mean"],
-            mode="lines",
-            name=eruption,
-            line=dict(width=4, color=c)
-        ))
-
-    fig.add_vline(x=0, line=dict(color="red", width=4, dash="dash"))
-
-    fig.update_layout(
-        height=500,
-        template="simple_white",
-        xaxis_title="Heures avant/après éruption",
-        yaxis_title="Amplitude moyenne"
+# ------------------------------------------------------------
+# 2. Ligne verte néon + légende "eruption" (sauf Waterfall 3D)
+# ------------------------------------------------------------
+def add_eruption_line(fig):
+    # Ligne verticale + bande légère
+    fig.add_shape(
+        type="line", x0=0, x1=0, y0=0, y1=1,
+        xref="x", yref="paper",
+        line=dict(color="#39FF14", width=4)
     )
+    fig.add_shape(
+        type="rect", x0=-3, x1=3, y0=0, y1=1,
+        xref="x", yref="paper",
+        fillcolor="#39FF14", opacity=0.12, line_width=0
+    )
+
+    # Ajout de la légende "eruption" en vert néon (seulement si não existe ainda)
+    if not any(trace.name == "eruption" for trace in fig.data if hasattr(trace, 'name')):
+        fig.add_trace(go.Scatter(
+            x=[None], y=[None],
+            mode="lines",
+            name="eruption",
+            line=dict(color="#39FF14", width=6),
+            legendrank=1000  # toujours en haut de la légende
+        ))
     return fig
 
 
-# -----------------------------------------------------------
-# 2. Courbe RSAM
-# -----------------------------------------------------------
-
-def plot_rsam(df_compare):
+# ------------------------------------------------------------
+# 3. RSAM
+# ------------------------------------------------------------
+def plot_rsam(df):
     fig = go.Figure()
-
-    for eruption in df_compare["eruption"].unique():
-        sub = df_compare[df_compare["eruption"] == eruption]
-        c = sub["color"].iloc[0]
-
-        fig.add_trace(go.Scatter(
-            x=sub["hours_to_eruption"],
-            y=sub["RSAM"],
-            mode="lines",
-            name=eruption,
-            line=dict(width=4, color=c)
-        ))
-
-    fig.add_vline(x=0, line=dict(color="red", width=4, dash="dash"))
-
-    fig.update_layout(
-        height=500,
-        template="simple_white",
-        xaxis_title="Heures avant/après éruption",
-        yaxis_title="RSAM"
-    )
+    for e in df["eruption"].unique():
+        sub = df[df["eruption"] == e]
+        fig.add_trace(go.Scatter(x=sub["hours_to_eruption"], y=sub["RSAM"],
+                                 mode="lines", name=e, line=dict(width=2, color=sub["color"].iloc[0])))
+    fig = add_eruption_line(fig)
+    fig.update_layout(height=500, template="simple_white",
+                      title="RSAM – Real-time Seismic Amplitude Measurement",
+                      xaxis_title="Heures / éruption", yaxis_title="RSAM")
     return fig
 
 
-# -----------------------------------------------------------
-# 3. Énergie cumulée
-# -----------------------------------------------------------
-
-def plot_energy(df_compare):
+# ------------------------------------------------------------
+# 4. Network Mean Seismic Amplitude
+# ------------------------------------------------------------
+def plot_network_amplitude(df):
     fig = go.Figure()
+    for e in df["eruption"].unique():
+        sub = df[df["eruption"] == e]
+        fig.add_trace(go.Scatter(x=sub["hours_to_eruption"], y=sub["amplitude_mean"],
+                                 mode="lines", name=e, line=dict(width=2, color=sub["color"].iloc[0])))
+    fig = add_eruption_line(fig)
+    fig.update_layout(height=500, template="simple_white",
+                      title="Network Mean Seismic Amplitude",
+                      xaxis_title="Heures / éruption", yaxis_title="Amplitude moyenne du réseau")
+    return fig
 
-    for eruption in df_compare["eruption"].unique():
-        sub = df_compare[df_compare["eruption"] == eruption].sort_values("hours_to_eruption")
+
+# ------------------------------------------------------------
+# 5. Cumulative Seismic Energy Released
+# ------------------------------------------------------------
+def plot_cumulative_energy(df):
+    fig = go.Figure()
+    for e in df["eruption"].unique():
+        sub = df[df["eruption"] == e].sort_values("hours_to_eruption")
         energy = (sub["amplitude_mean"]**2).cumsum()
-
-        c = sub["color"].iloc[0]
-
-        fig.add_trace(go.Scatter(
-            x=sub["hours_to_eruption"],
-            y=energy,
-            mode="lines",
-            name=eruption,
-            line=dict(width=4, color=c)
-        ))
-
-    fig.add_vline(x=0, line=dict(color="red", width=4, dash="dash"))
-
-    fig.update_layout(
-        height=500,
-        template="simple_white",
-        xaxis_title="Heures avant/après éruption",
-        yaxis_title="Énergie sismique cumulée"
-    )
+        fig.add_trace(go.Scatter(x=sub["hours_to_eruption"], y=energy,
+                                 mode="lines", name=e, line=dict(width=2, color=sub["color"].iloc[0])))
+    fig = add_eruption_line(fig)
+    fig.update_layout(height=500, template="simple_white",
+                      title="Cumulative Seismic Energy Released",
+                      xaxis_title="Heures / éruption", yaxis_title="Énergie sismique cumulée")
     return fig
 
 
-# -----------------------------------------------------------
-# 4. Intervalle de confiance à 95 %
-# -----------------------------------------------------------
-
-def plot_confidence(df_compare):
+# ------------------------------------------------------------
+# 6. Shannon Entropy
+# ------------------------------------------------------------
+def plot_shannon_entropy(df):
     fig = go.Figure()
+    for e in df["eruption"].unique():
+        sub = df[df["eruption"] == e]
+        fig.add_trace(go.Scatter(x=sub["hours_to_eruption"], y=sub["SE_env"],
+                                 mode="lines", name=e, line=dict(width=2, color=sub["color"].iloc[0])))
+    fig = add_eruption_line(fig)
+    fig.update_layout(height=500, template="plotly_dark",
+                      title="Shannon Entropy (enveloppe lissée)",
+                      xaxis_title="Heures / éruption", yaxis_title="Entropie spectrale")
+    return fig
 
-    for eruption in df_compare["eruption"].unique():
-        sub = df_compare[df_compare["eruption"] == eruption]
 
-        sub = sub.set_index("time_min")["amplitude_mean"]
-        res = sub.resample("10min").mean()
+# ------------------------------------------------------------
+# 7. Kurtosis
+# ------------------------------------------------------------
+def plot_kurtosis(df):
+    fig = go.Figure()
+    
+    for e in df["eruption"].unique():
+        sub = df[df["eruption"] == e]
+        fig.add_trace(go.Scatter(
+            x=sub["hours_to_eruption"],
+            y=sub["Kurt_env"],
+            mode="markers",  # ← AQUI ESTÁ A MÁGICA: só pontos!
+            name=e,
+            marker=dict(
+                size=8,
+                color=sub["color"].iloc[0],
+                line=dict(width=1, color="white"),
+                opacity=0.9,
+                symbol="circle"
+            ),
+            hovertemplate=
+                "<b>%{text}</b><br>" +
+                "Heures: %{x:.1f}<br>" +
+                "Kurtosis: %{y:.2f}<extra></extra>",
+            text=[e] * len(sub)
+        ))
+    
+    fig = add_eruption_line(fig)
+    
+    fig.update_layout(
+        height=500,
+        template="plotly_dark",
+        title="Kurtosis (enveloppe lissée)",
+        xaxis_title="Heures / éruption",
+        yaxis_title="Kurtosis",
+        hovermode="x unified",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+    )
+    
+    return fig
 
-        roll = res.rolling(window=6, min_periods=3, center=True)
-        mean = roll.mean()
-        std = roll.std()
-        count = roll.count()
 
-        hours = (mean.index - eruptions[eruption]["time"]).total_seconds() / 3600
+# ------------------------------------------------------------
+# 8. Amplitude ± 95% Intervalle de confiance
+# ------------------------------------------------------------
+def plot_amplitude_with_ci(df):
+    fig = go.Figure()
+    for e in df["eruption"].unique():
+        sub = df[df["eruption"] == e].set_index("time_min")["amplitude_mean"].resample("10min").mean()
+        roll = sub.rolling(6, center=True, min_periods=3)
+        mean = roll.mean(); std = roll.std(); count = roll.count()
+        hours = (mean.index - eruptions[e]["time"]).total_seconds() / 3600
         upper = mean + 1.96 * std / np.sqrt(count)
         lower = mean - 1.96 * std / np.sqrt(count)
+        color = color_map[e]
+        hex_color = color.lstrip('#')
+        r, g, b = tuple(int(hex_color[i:i+2], 16) for i in (0, 2, 4))
+        fillcolor = f"rgba({r},{g},{b},0.25)"
 
-        color = color_map[eruption]
-        rgba = rgba_map[color]
+        fig.add_trace(go.Scatter(x=hours, y=mean, name=e, line=dict(color=color, width=4)))
+        fig.add_trace(go.Scatter(x=list(hours)+list(hours[::-1]),
+                                 y=list(upper)+list(lower[::-1]),
+                                 fill="toself", fillcolor=fillcolor, line_width=0, showlegend=False))
+    fig = add_eruption_line(fig)
+    fig.update_layout(height=600, template="simple_white",
+                      title="Network Mean Amplitude ± 95% Confidence Interval",
+                      xaxis_title="Heures / éruption", yaxis_title="Amplitude moyenne ± IC95%")
+    return fig
 
-        fig.add_trace(go.Scatter(
-            x=hours,
-            y=mean,
-            mode="lines",
-            name=eruption,
-            line=dict(color=color, width=4)
-        ))
 
-        fig.add_trace(go.Scatter(
-            x=list(hours) + list(hours[::-1]),
-            y=list(upper) + list(lower[::-1]),
-            fill="toself",
-            fillcolor=rgba,
-            line=dict(width=0),
-            showlegend=False
-        ))
+# ------------------------------------------------------------
+# 10. Variation relative de vitesse sismique dV/V (%)
+# ------------------------------------------------------------
+def plot_dvv(df_compare):
+    ref_vals = []
+    for name in df_compare["eruption"].unique():
+        sub = df_compare[df_compare["eruption"] == name]
+        ref = sub[sub["hours_to_eruption"].between(-48, -24)]["amplitude_mean"].mean()
+        ref_vals.append(ref)
+    global_ref = np.mean(ref_vals) if ref_vals else 1
 
-    fig.add_vline(x=0, line=dict(color="red", width=4, dash="dash"))
+    df_plot = df_compare.copy()
+    df_plot["dv_v"] = (df_plot["amplitude_mean"] - global_ref) / global_ref * 100
+
+    fig = go.Figure()
+    for e in df_plot["eruption"].unique():
+        sub = df_plot[df_plot["eruption"] == e]
+        fig.add_trace(go.Scatter(x=sub["hours_to_eruption"], y=sub["dv_v"],
+                                 mode="lines", name=e, line=dict(width=2, color=sub["color"].iloc[0])))
+    
+    fig = add_eruption_line(fig)
+    fig.add_hline(y=0, line=dict(color="white", dash="dash"))
+    
+    # TÍTULO DIRETO NO GRÁFICO (igual aos outros)
+    fig.update_layout(
+        height=500,
+        template="plotly_dark",
+        title="Variation de vitesse sismique dV/V (%) – précurseur de déformation",
+        yaxis_title="dV/V (%)",
+        xaxis_title="Heures / éruption"
+    )
+    
+    st.plotly_chart(fig, width='stretch')
+    st.caption("dV/V > 0.1 % = gonflement | < -0.1 % = dégonflement")
+
+
+# ------------------------------------------------------------
+# 11. Nombre d'événements sismiques par heure – TOUTES LES ÉRUPTIONS
+# ------------------------------------------------------------
+def plot_event_count():
+    st.markdown("### Nombre d'événements sismiques par heure")
+
+    default_eruption = next((k for k in eruptions.keys() if "2020" in k), list(eruptions.keys())[0])
+    eruption = st.selectbox(
+        "Choisir l'éruption pour le comptage",
+        options=list(eruptions.keys()),
+        index=list(eruptions.keys()).index(default_eruption),
+        key="eventcount_eruption"
+    )
+
+    df = load_eruption_file(eruption)
+    erupt_time = eruptions[eruption]["time"]
+
+    df = df[
+        (df["time_min"] >= erupt_time - pd.Timedelta(hours=72)) &
+        (df["time_min"] <= erupt_time + pd.Timedelta(hours=12))
+    ].copy()
+
+    if len(df) == 0:
+        st.warning("Aucune donnée pour cette période.")
+        return
+
+    quiet_period = df[df["time_min"] < erupt_time - pd.Timedelta(hours=48)]
+    threshold = quiet_period["amplitude_mean"].quantile(0.92) if len(quiet_period) > 100 else df["amplitude_mean"].quantile(0.92)
+
+    df["event"] = (df["amplitude_mean"] > threshold).astype(int)
+
+    hourly = df.groupby(pd.Grouper(key="time_min", freq="1H"))["event"].sum().reset_index()
+
+    fig = go.Figure()
+    fig.add_trace(go.Bar(
+        x=hourly["time_min"],
+        y=hourly["event"],
+        marker_color="crimson",
+        name="Événements/heure",
+        hovertemplate="<b>Heure</b>: %{x}<br><b>Événements</b>: %{y}<extra></extra>"
+    ))
+
+    fig.add_vline(x=erupt_time, line=dict(color="#39FF14", width=5))
+    fig.add_vrect(x0=erupt_time - pd.Timedelta(hours=6), x1=erupt_time + pd.Timedelta(hours=6),
+                  fillcolor="#39FF14", opacity=0.1, line_width=0)
+
+    # Légende "eruption" ajoutée ici aussi
+    if not any(trace.name == "eruption" for trace in fig.data if hasattr(trace, 'name')):
+        fig.add_trace(go.Scatter(x=[None], y=[None], mode="lines", name="eruption",
+                                 line=dict(color="#39FF14", width=6)))
 
     fig.update_layout(
-        height=650,
-        template="simple_white",
-        xaxis_title="Heures",
-        yaxis_title="Amplitude ± 95% IC"
+        height=520,
+        template="plotly_dark",
+        title=f"Événements sismiques détectés – {eruption.split(' – ')[0]}",
+        xaxis_title="Date / Heure",
+        yaxis_title="Nombre d'événements par heure",
+        xaxis=dict(range=[erupt_time - pd.Timedelta(hours=72), erupt_time + pd.Timedelta(hours=12)])
     )
-    return fig
+    st.plotly_chart(fig, width='stretch')
+    st.caption("Seuil = 92ᵉ percentile du bruit de fond – méthode standard OVPF/USGS")
+
+
+# ------------------------------------------------------------
+# 12. Tremor volcanique – méthode OVPF
+# ------------------------------------------------------------
+def display_spectrogram():
+    st.markdown("### TREMOR VOLCANIQUE – Méthode OVPF (RSAM + Envelope)")
+
+    default_eruption = next((k for k in eruptions.keys() if "2020" in k), list(eruptions.keys())[0])
+
+    col1, col2 = st.columns(2)
+    with col1:
+        eruption = st.selectbox("Éruption", list(eruptions.keys()),
+                               index=list(eruptions.keys()).index(default_eruption),
+                               key="tremor_erupt")
+    with col2:
+        df_full = load_eruption_file(eruption)
+        station = st.selectbox("Station", sorted(df_full["station"].unique()),
+                               index=sorted(df_full["station"].unique()).index("PCR") if "PCR" in df_full["station"].unique() else 0,
+                               key="tremor_stat")
+
+    erupt_time = eruptions[eruption]["time"]
+    start = erupt_time - pd.Timedelta(hours=72)
+    end = erupt_time + pd.Timedelta(hours=12)
+
+    df = df_full[(df_full["station"] == station) &
+                 (df_full["time_min"] >= start) &
+                 (df_full["time_min"] <= end)].copy()
+
+    if len(df) < 50:
+        st.warning("Pas assez de données.")
+        return
+
+    df["hours"] = (df["time_min"] - erupt_time).dt.total_seconds() / 3600
+    df["RSAM"] = df["amplitude_mean"].rolling(10, center=True).mean()
+    df["envelope"] = df["amplitude_mean"].rolling(60, center=True).quantile(0.9)
+
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=df["hours"], y=df["amplitude_mean"],
+                             mode="lines", line=dict(color="gray", width=1), name="Amplitude brute", opacity=0.5))
+    fig.add_trace(go.Scatter(x=df["hours"], y=df["RSAM"],
+                             mode="lines", line=dict(color="red", width=4), name="RSAM"))
+    fig.add_trace(go.Scatter(x=df["hours"], y=df["envelope"],
+                             mode="lines", line=dict(color="yellow", width=4), name="Envelope 90% (tremor)"))
+
+    fig = add_eruption_line(fig)
+
+    fig.update_layout(
+        height=650, template="plotly_dark",
+        title=f"TREMOR DÉTECTÉ – {station} – {eruption.split(' – ')[0]}",
+        xaxis_title="Heures / éruption (t=0)", yaxis_title="Amplitude sismique",
+        xaxis=dict(range=[-72, 12])
+    )
+
+    st.plotly_chart(fig, width='stretch')
+    st.info("Méthode officielle de l’OVPF – montée claire du RSAM et de l’envelope jaune.")
+
+
+# ------------------------------------------------------------
+# Waterfall 3D – Amplitude × Temps × Station (SANS légende eruption)
+# ------------------------------------------------------------
+def plot_3d_waterfall():
+    st.markdown("### Waterfall 3D – Propagation du tremor dans le réseau sismique")
+
+    try:
+        default_eruption = next(k for k in eruptions.keys() if "2020" in k)
+    except:
+        default_eruption = list(eruptions.keys())[-1]
+
+    eruption = st.selectbox(
+        "Éruption pour le waterfall 3D",
+        options=list(eruptions.keys()),
+        index=list(eruptions.keys()).index(default_eruption),
+        key="3d_waterfall_eruption"
+    )
+
+    df = load_eruption_file(eruption)
+    erupt_time = eruptions[eruption]["time"]
+
+    df = df[
+        (df["time_min"] >= erupt_time - pd.Timedelta(hours=48)) &
+        (df["time_min"] <= erupt_time + pd.Timedelta(hours=6))
+    ].copy()
+
+    if len(df) < 100:
+        st.warning("Pas assez de données pour le waterfall 3D.")
+        return
+
+    df["hours"] = (df["time_min"] - erupt_time).dt.total_seconds() / 3600
+
+    pivot = df.pivot_table(
+        values="amplitude_mean",
+        index="station",
+        columns="hours",
+        aggfunc="mean"
+    ).fillna(0)
+
+    pivot = pivot.loc[pivot.mean(axis=1).sort_values(ascending=False).index]
+
+    x = pivot.columns.values
+    y = np.arange(len(pivot))
+    z = pivot.values
+    stations = pivot.index.tolist()
+
+    fig = go.Figure(data=go.Surface(
+        z=z,
+        x=x,
+        y=y,
+        colorscale="Hot",
+        cmin=0,
+        lighting=dict(ambient=0.6, diffuse=0.9, specular=0.8, roughness=0.3),
+        contours=dict(
+            z=dict(
+                show=True,
+                color="#1C1C1C",   
+                width=1,
+                project_z=True
+            )
+        ),
+        hovertemplate="<b>Station</b>: %{text}<br><b>Heure</b>: %{x:.1f} h<br><b>Amplitude</b>: %{z:.1f}<extra></extra>",
+        text=stations
+    ))
+
+    fig.update_layout(
+        height=550,
+        template="plotly_dark",
+        scene=dict(
+            xaxis=dict(title="Heures / éruption (t=0)", gridcolor="gray"),
+            yaxis=dict(
+                title="Stations sismiques",
+                tickvals=y,
+                ticktext=stations,
+                gridcolor="gray",
+                showticklabels=True
+            ),
+            zaxis=dict(title="Amplitude moyenne", gridcolor="gray"),
+            camera=dict(
+                eye=dict(x=1.2, y=1.2, z=1.5),
+                center=dict(x=0, y=0, z=0),
+                up=dict(x=0, y=0, z=1)
+            ),
+            bgcolor="black"
+        ),
+        title=f"Waterfall 3D – {eruption.split(' – ')[0]}",
+        margin=dict(l=0, r=0, t=60, b=0)
+    )
+
+    st.plotly_chart(fig, width='stretch')
+
+
+# ------------------------------------------------------------
+# 13. Fonction principale – appelée depuis app.py
+# ------------------------------------------------------------
+# ------------------------------------------------------------
+# 13. Fonction principale – ORDEM EXATA QUE VOCÊ PEDIU
+# ------------------------------------------------------------
+def show_graphics(selected_eruptions):
+    st.markdown("---")
+    st.markdown("### Analyse comparative des précurseurs sismiques. \nDonnées historiques OVPF sur les éruptions passées")
+
+    if not selected_eruptions:
+        st.info("Aucune éruption sélectionnée.")
+        return
+
+    df = load_aligned_data(selected_eruptions)
+
+    # === ORDEM EXATA QUE VOCÊ PEDIU ===
+    st.plotly_chart(plot_kurtosis(df),              width='stretch') 
+    st.plotly_chart(plot_shannon_entropy(df),       width='stretch')
+    st.plotly_chart(plot_rsam(df),                  width='stretch')   
+    st.plotly_chart(plot_cumulative_energy(df),     width='stretch')  
+    st.plotly_chart(plot_amplitude_with_ci(df),     width='stretch') 
+    plot_dvv(df)  # 7. Variation de vitesse sismique dV/V (%)
+    plot_event_count()  # 8. Nombre d'événements sismiques par heure
+    plot_3d_waterfall()  # 9. Waterfall 3D
+    display_spectrogram()  # 10. TREMOR VOLCANIQUE – Méthode OVPF
+    # ===================================

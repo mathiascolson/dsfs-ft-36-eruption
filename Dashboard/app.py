@@ -1,392 +1,219 @@
-<<<<<<< HEAD
-# dashboard.py rewritten using modules
 import streamlit as st
 import pandas as pd
 import numpy as np
-import plotly.express as px
 import plotly.graph_objects as go
 from streamlit_folium import st_folium
+import plotly.express as px
 
-from constants import eruptions, color_map, rgba_map, station_coords
-from data_loader import load_eruption_file, load_raw_file, load_window
-from graphing import plot_amplitude, plot_rsam, plot_energy, plot_confidence
+# =============================================================
+# IMPORTS LOCAUX
+# =============================================================
+from constants import eruptions, station_coords
+from data_loader import load_eruption_file
 from mapping import create_station_map
-from preprocess import preprocess_data
+from graphing import show_graphics
+from real_time_update import start_realtime_update, run_realtime_update
 
-st.set_page_config(page_title="Piton de la Fournaise - Prédiction", layout="wide")
+# =============================================================
+# CONFIGURATION + FIXES HUGGING FACE (scroll + Plotly warnings)
+# =============================================================
+st.set_page_config(
+    page_title="Piton de la Fournaise - Surveillance",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
-# Title
-st.markdown("<h1 style='text-align:center; color:darkred; font-weight:bold;'>Prédiction d'éruption volcanique🌋 </h1>", unsafe_allow_html=True)
-
-main_col, risk_col = st.columns([4.5, 1.5])
-
-# Sidebar alert system
-st.sidebar.image("https://media.gettyimages.com/id/110834060/fr/photo/reunion-eruption-of-the-piton-de-la-fournaise-in-reunion-on-april-03-2007-piton-de-la.jpg?s=612x612&w=0&k=20&c=32ejXjNKw5GpQf9ypQdWXSHV8BIhbkNW9hw8m9zu9nE=")
-st.sidebar.title("Système d'alerte en temps réel")
-
-# Compute latest RSAM from last eruption
-latest_name = list(eruptions.keys())[-1]
-try:
-    df_latest = load_eruption_file(latest_name).tail(100)
-    latest_rsam = df_latest["amplitude_mean"].mean() if "amplitude_mean" in df_latest else 500
-except:
-    latest_rsam = 500
-
-if latest_rsam > 5000:
-    level, color, emoji = "ÉRUPTION", "#9f00e0", "🟪"
-elif latest_rsam > 3000:
-    level, color, emoji = "IMMINENT (<1h)", "#e60000", "🔴"
-elif latest_rsam > 1500:
-    level, color, emoji = "ÉLEVÉ (<12h)", "#ff6600", "🟠"
-elif latest_rsam > 800:
-    level, color, emoji = "MOYEN (<48h)", "#ffd700", "🟡"
-else:
-    level, color, emoji = "NORMAL", "#00b300", "🟢"
-
-st.sidebar.markdown(f"""
-<div style='text-align:center; padding:20px; border-radius:20px; background:linear-gradient(135deg, #1a1a1a, #2d2d2d); border:3px solid {color}; box-shadow:0 0 30px {color}40;'>
-    <h1 style='margin:0; color:{color}; font-size:60px;'>{emoji}</h1>
-    <h2 style='margin:10px 0 5px; color:white;'>{level}</h2>
-    <p style='margin:0; color:#ccc; font-size:14px;'>RSAM: {latest_rsam:,.0f}</p>
-</div>
+# CSS para forçar scroll na sidebar e remover avisos do Plotly
+st.markdown("""
+<style>
+    /* Força scroll na sidebar no Hugging Face */
+    section[data-testid="stSidebar"] {
+        overflow-y: auto !important;
+        height: 100vh !important;
+    }
+    /* Remove barra de ferramentas do Plotly (elimina o aviso) */
+    .js-plotly-plot .plotly .modebar {
+        display: none !important;
+    }
+</style>
 """, unsafe_allow_html=True)
 
-# Sidebar selection for comparison
-st.sidebar.markdown("---")
-st.sidebar.subheader("Éruptions comparées")
-selected_for_compare = st.sidebar.multiselect(
-    "Sélectionnez les éruptions à comparer",
-    options=list(eruptions.keys()),
-    default=list(eruptions.keys())
-)
-st.sidebar.markdown("### Stations pour les comparatifs")
-selected_compare_stations = st.sidebar.multiselect(
-    "Stations à inclure dans les comparatifs",
-    options=station_coords.keys(),
-    default=list(station_coords.keys())
-)
+# =============================================================
+# ÉTAT INITIAL DE LA SESSION
+# =============================================================
+if "last_ml_risk" not in st.session_state:
+    st.session_state.last_ml_risk = None
+if "selected_stations" not in st.session_state:
+    st.session_state.selected_stations = ["SNE", "HIM", "DSO", "FOR", "FJS", "RVA", "CSS", "TKR"]
+if "selected_eruption_map" not in st.session_state:
+    st.session_state.selected_eruption_map = list(eruptions.keys())[0]
 
-# MAP SECTION
-st.markdown("### Stations sismiques actives")
-col_map, col_controls = st.columns([7, 3])
+# Liste complète des stations
+ALL_STATIONS = ["BON","DSM","DSO","ENO","NSR","NTR","BLE","CSS","HIM","PJR","PCR","PER","TKR","SNE","FJS","LCR","PRA","PHR","RVA","RVP","CRA","FOR","RER","DEL","CSR"]
+RECOMMENDED = ["SNE", "HIM", "DSO", "FOR", "FJS", "RVA", "CSS", "TKR"]
+BAD_STATIONS_REALTIME = ["ENO", "PHR", "PER", "BLE"]
 
-with col_map:
-    selected_main = st.session_state.get("main_eruption_map", list(eruptions.keys())[0])
-
-    df_map = load_eruption_file(selected_main)
-    erupt_time = eruptions[selected_main]["time"]
-    df_map = df_map[df_map["time_min"] >= erupt_time - pd.Timedelta(days=4)]
-
-    tile_option = st.radio(
-        "Style de carte",
-        options=["Street (OpenStreetMap)", "Satellite (Google)", "Topographic (OpenTopoMap)"],
-        index=1,
-        horizontal=True,
-        key="map_tile_selector"
-    )
-
-    if tile_option == "Street (OpenStreetMap)":
-        tiles = "OpenStreetMap"; attr = "© OpenStreetMap contributors"
-    elif tile_option == "Satellite (Google)":
-        tiles = "https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}&s=Galileo"; attr = "© Google"
-    else:
-        tiles = "https://tile.opentopomap.org/{z}/{x}/{y}.png"; attr = "© OpenTopoMap"
-
-    selected_stations_map = st.session_state.get("selected_stations_map", [])
-    m = create_station_map(selected_stations_map, tiles, attr)
-    st_folium(m, width=700, height=555, key="map_final")
-
-with col_controls:
-    st.markdown("**Paramètres de la carte**")
-    selected_main = st.selectbox("Éruption pour l'affichage de la carte", options=list(eruptions.keys()), key="main_eruption_map")
-
-    df_temp = load_raw_file(selected_main)
-    available_stations = sorted(df_temp["station"].unique())
-
-    selected_stations_map = st.multiselect(
-        "Stations à afficher",
-        options=available_stations,
-        default=available_stations[:10],
-        key="selected_stations_map"
-    )
-
-# COMPARISON DATA
-@st.cache_data
-def load_aligned_selected(selected_list, selected_stations):
-    frames = []
-    for name in selected_list:
-        df = load_eruption_file(name)
-
-        # filtrage par stations
-        df = df[df["station"].isin(selected_stations)]
-
-        info = eruptions[name]
-        start = info["time"] - pd.Timedelta(hours=82)
-        end = info["time"] + pd.Timedelta(hours=24)
-
-        df = df[(df["time_min"] >= start) & (df["time_min"] <= end)]
-        if df.empty:
-            continue
-
-        # Ré-agrégation APRÈS filtrage
-        df["hours_to_eruption"] = (df["time_min"] - info["time"]).dt.total_seconds() / 3600
-        df = df[(df["hours_to_eruption"] >= -80) & (df["hours_to_eruption"] <= 24)]
-
-        res = (
-            df.set_index("time_min")
-            .resample("10min")
-            .mean(numeric_only=True)
-            .reset_index()
-        )
-
-        res["hours_to_eruption"] = (res["time_min"] - info["time"]).dt.total_seconds() / 3600
-        res["eruption"] = name
-        res["color"] = color_map[name]
-
-        frames.append(res)
-
-    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
-
-df_compare = load_aligned_selected(selected_for_compare, selected_compare_stations)
-
-if not df_compare.empty:
-    st.markdown("---")
-    st.markdown(f"# Précurseurs pré-éruptifs – {len(selected_for_compare)} éruptions alignées")
-
-    st.subheader("Amplitude sismique moyenne du réseau")
-    st.plotly_chart(plot_amplitude(df_compare), use_container_width=True)
-
-    st.subheader("RSAM – mesure en temps réel")
-    st.plotly_chart(plot_rsam(df_compare), use_container_width=True)
-
-    st.subheader("Énergie sismique cumulée libérée")
-    st.plotly_chart(plot_energy(df_compare), use_container_width=True)
-
-    st.subheader("Amplitude ± IC95%")
-    st.plotly_chart(plot_confidence(df_compare), use_container_width=True)
-
-# FOOTER
-st.success("**Piton de la Fournaise – Next-Gen Volcano Monitoring System** | Dashboard optimisé")
-st.caption("© David, Gabriel, Emmeline & Mathias | Jedha Fullstack 2025")
-=======
-import streamlit as st
-import pandas as pd
-import plotly.express as px
-import plotly.graph_objects as go
-from datetime import date
-
-st.set_page_config(page_title="Piton de la Fournaise - Prédiction", layout="wide")
-
-# ==================== TITRE ====================
+# =============================================================
+# TITRE PRINCIPAL
+# =============================================================
 st.markdown(
-    "<h1 style='text-align:center; color:darkred; font-weight:bold;'>Prédiction d'éruption volcanique🌋 </h1>",
-    unsafe_allow_html=True,
+    """
+    <h3 style='text-align:center; color:#3D9DF3; font-weight:bold;'>PITON DE LA FOURNAISE</h3>
+    <h3 style='text-align:center; color:#f0f0f0;'>Système de surveillance sismologique et prédiction d'éruptions</h3>
+    """,
+    unsafe_allow_html=True
 )
 
-main_col, risk_col = st.columns([4.5, 1.5])
+# =============================================================
+# GRAPHIQUE RSAM 24H EN TEMPS RÉEL
+# =============================================================
+if "df_realtime" in st.session_state and not st.session_state.df_realtime.empty:
+    df_plot = st.session_state.df_realtime.copy()
+    stations_valides = [s for s in st.session_state.selected_stations if s not in BAD_STATIONS_REALTIME]
+    df_plot = df_plot[df_plot["station"].isin(stations_valides)]
 
-# ==================== SIDEBAR ====================
-with st.sidebar:
-    st.title("Filtres & Paramètres")
-
-    st.markdown(
-        """
-        **Dates des éruptions passées étudiées :**
-        - 11/09/2016  
-        - 25/10/2019  
-        - 07/12/2020  
-        - 02/07/2023
-        """
-    )
-
-    eruption_dates = [
-        date(2016, 9, 11),
-        date(2019, 10, 25),
-        date(2020, 12, 7),
-        date(2023, 7, 2),
-    ]
-
-    # 🔥 Sélection multiple d'éruptions
-    selected_eruptions = st.multiselect(
-        "Éruptions à analyser",
-        options=eruption_dates,
-        default=[date(2020, 12, 7)],
-        format_func=lambda d: d.strftime("%d/%m/%Y"),
-    )
-
-    file_map = {
-        date(2016, 9, 11): "2016_09_pf_aggregated_2016_1min_1Hz.csv",
-        date(2019, 10, 25): "2019_10_pf_aggregated_2019_1min_1Hz.csv",
-        date(2020, 12, 7): "2020_12_04pf_aggregated_1min_1Hz.csv",
-        date(2023, 7, 2): "2023_07_pf_aggregated_2023_1min_1Hz.csv",
-    }
-
-    @st.cache_data
-    def load_data(d):
-        df = pd.read_csv(file_map[d])
-        df["time_min"] = pd.to_datetime(df["time_min"])
-        df["eruption_date"] = d
-        return df
-
-    # 🔥 Charger plusieurs éruptions
-    if selected_eruptions:
-        df = pd.concat([load_data(d) for d in selected_eruptions], ignore_index=True)
+    if not df_plot.empty:
+        fig_24h = px.line(
+            df_plot,
+            x="time_min",
+            y="RSAM",
+            color="station",
+            title="RSAM en temps réel — Dernières 24 heures",
+            labels={"time_min": "Date/Heure", "RSAM": "RSAM"},
+            height=500
+        )
+        fig_24h.update_traces(line=dict(width=1.8))
+        fig_24h.update_layout(
+            plot_bgcolor="rgba(0,0,0,0)",
+            paper_bgcolor="rgba(0,0,0,0)",
+            font=dict(color="#f0f0f0"),
+            title_x=0.5,
+            legend=dict(title="Stations", orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+            xaxis=dict(showgrid=True, gridcolor="#333333"),
+            yaxis=dict(showgrid=True, gridcolor="#333333")
+        )
+        st.plotly_chart(fig_24h, use_container_width=True, config={'displayModeBar': False})
     else:
-        df = pd.DataFrame()
-
-    stations = sorted(df["station"].unique())
-    selected_stations = st.multiselect("Stations", stations, default=stations[:6])
-
-df_filtered = df[df["station"].isin(selected_stations)].copy() if selected_stations else pd.DataFrame()
-
-# ==================== RISQUE ====================
-max_std = df["amplitude_std"].max() if not df.empty else 0
-
-if max_std > 100_000:
-    risk_text, risk_color, risk_emoji = "Éruption en cours", "purple", "🟪"
-elif max_std > 30_000:
-    risk_text, risk_color, risk_emoji = "Risque < 1h", "red", "🔴"
-elif max_std > 10_000:
-    risk_text, risk_color, risk_emoji = "Risque < 12h", "orange", "🟠"
-elif max_std > 3_000:
-    risk_text, risk_color, risk_emoji = "Risque < 24h", "goldenrod", "🟡"
+        st.info("Aucune donnée disponible (stations filtrées pour garantir la qualité du RSAM).")
 else:
-    risk_text, risk_color, risk_emoji = "Pas de risque", "green", "🟢"
+    st.info("Cliquez sur « Actualiser données 24h » pour afficher le graphique RSAM en temps réel.")
 
-# ==================== COLONNE RISQUE ====================
-with risk_col:
-    st.markdown("## Niveau de risque actuel")
-    st.markdown(
-        f"""
-        <div style="text-align:center; padding:20px; border-radius:15px; background:#333; color:white;">
-            <h2 style="margin:5px; color:{risk_color}">{risk_emoji}🌋</h1>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+# =============================================================
+# SIDEBAR — JAUGE + ALERTES
+# =============================================================
+st.sidebar.markdown("<div style='text-align: center;'><h3>Niveau de risque sismique actuel</h3></div>", unsafe_allow_html=True)
 
-    st.markdown("### Légende")
-    legend = [
-        ("purple","Éruption en cours"),
-        ("red","Risque très élevé (<1h)"),
-        ("orange","Risque élevé (<12h)"),
-        ("goldenrod","Risque modéré (<24h)"),
-        ("green","Pas de risque détecté"),
-    ]
-    for col, txt in legend:
-        if txt == risk_text:
-            st.markdown(
-                f"<div style='background:linear-gradient(90DEG,{col}40,transparent); padding:12px; border-left:6px solid {col}; border-radius:8px; margin:8px 0;'><strong style='color:{col}'>➤ {txt} ← ACTUEL</strong></div>",
-                unsafe_allow_html=True,
-            )
-        else:
-            st.markdown(f"<small style='color:{col}'>{txt}</small>", unsafe_allow_html=True)
+valeur_actuelle = st.session_state.last_ml_risk if st.session_state.last_ml_risk is not None else 0
 
-# ==================== CARTE ====================
-with main_col:
-    st.markdown("## Carte des stations")
-
-    coords = {
-        'DSM': (-21.11, 55.53), 'BON': (-21.24, 55.70), 'DSO': (-21.17, 55.55),
-        'ENO': (-21.31, 55.68), 'NSR': (-21.39, 55.60), 'NTR': (-21.30, 55.60),
-        'BLE': (-21.28, 55.57), 'CSS': (-21.26, 55.68), 'HIM': (-21.20, 55.67),
-        'PJR': (-21.35, 55.69), 'PCR': (-21.29, 55.64), 'PER': (-21.34, 55.61),
-        'TKR': (-21.23, 55.56), 'FJS': (-21.27, 55.62), 'SNE': (-21.32, 55.58),
+fig_gauge = go.Figure(go.Indicator(
+    mode="gauge+number+delta",
+    value=valeur_actuelle,
+    number={'suffix': "%", 'font': {'size': 40, 'color': 'white'}},
+    delta={'reference': 50, 'position': "top"},
+    title={'text': "<b>RISQUE D'ÉRUPTION</b>", 'font': {'size': 18, 'color': 'white'}},
+    gauge={
+        'axis': {'range': [0, 100], 'tickwidth': 2, 'tickcolor': "white"},
+        'bar': {'color': "#201e1e", 'thickness': 0.6},
+        'bgcolor': "rgba(0,0,0,0)",
+        'borderwidth': 2,
+        'bordercolor': "gray",
+        'steps': [
+            {'range': [0, 30], 'color': "#00ff00"},
+            {'range': [30, 60], 'color': "#ffff00"},
+            {'range': [60, 80], 'color': "#ff8800"},
+            {'range': [80, 100], 'color': "#ff0000"}
+        ],
+        'threshold': {'line': {'color': "red", 'width': 6}, 'thickness': 0.8, 'value': valeur_actuelle}
     }
+))
+fig_gauge.update_layout(height=300, paper_bgcolor="rgba(0,0,0,0)", font=dict(color="white"))
+st.sidebar.plotly_chart(fig_gauge, use_container_width=True, config={'displayModeBar': False})
 
-    map_df = pd.DataFrame([{"station": s, "lat": coords[s][0], "lon": coords[s][1]}
-                           for s in selected_stations if s in coords])
-
-    if not map_df.empty:
-        fig_map = px.scatter_mapbox(
-            map_df, lat="lat", lon="lon", color="station",
-            hover_name="station", text="station", zoom=10.3,
-            center={"lat": -21.25, "lon": 55.60}, height=620
-        )
-        fig_map.update_traces(marker=dict(size=48, opacity=0.95))
-        fig_map.update_layout(mapbox_style="open-street-map", margin=dict(l=0,r=0,t=40,b=0))
-        st.plotly_chart(fig_map, use_container_width=True)
-
-# ==================== GRAPHIQUES ====================
-if not df_filtered.empty:
-
-    st.markdown("## Comparaison de l’activité avant plusieurs éruptions")
-
-    # ------- 1. Graphique par station -------
-    fig1 = px.line(
-        df_filtered.sort_values("time_min"),
-        x="time_min",
-        y="amplitude_std",
-        color="eruption_date",    # 🔥 distinction par date d’éruption
-        line_dash="station",
-        title="Écart-type de l'amplitude par station et par éruption"
-    )
-
-    # 🔥 Ligne verticale pour CHAQUE éruption sélectionnée
-    for d in selected_eruptions:
-        eruption_time = df[df["eruption_date"] == d]["time_min"].max()
-
-        fig1.add_shape(
-            type="line", x0=eruption_time, x1=eruption_time, y0=0, y1=1,
-            xref="x", yref="paper", line=dict(width=4)
-        )
-        fig1.add_annotation(
-            x=eruption_time, y=1, yref="paper",
-            text=d.strftime("%d/%m/%Y"),
-            showarrow=False,
-            font=dict(color="white", size=12),
-            bgcolor="black",
-            yanchor="bottom"
-        )
-
-    fig1.update_layout(height=600)
-    st.plotly_chart(fig1, use_container_width=True)
-
-    # ------- 2. Moyenne + intervalle -------
-    st.markdown("## Moyenne globale (±1 écart-type)")
-
-    df_avg = df_filtered.groupby(["eruption_date", "time_min"])["amplitude_std"].agg(["mean", "std"]).reset_index()
-    df_avg["lower"] = df_avg["mean"] - df_avg["std"]
-    df_avg["upper"] = df_avg["mean"] + df_avg["std"]
-
-    fig2 = go.Figure()
-
-    for d in selected_eruptions:
-        sub = df_avg[df_avg["eruption_date"] == d]
-
-        fig2.add_trace(go.Scatter(
-            x=sub["time_min"], y=sub["upper"],
-            line=dict(width=0), showlegend=False
-        ))
-        fig2.add_trace(go.Scatter(
-            x=sub["time_min"], y=sub["lower"],
-            fill="tonexty", fillcolor="rgba(255,100,100,0.3)",
-            line=dict(width=0), showlegend=False
-        ))
-        fig2.add_trace(go.Scatter(
-            x=sub["time_min"], y=sub["mean"],
-            line=dict(width=4), name=d.strftime("%d/%m/%Y")
-        ))
-
-        # Ligne verticale
-        eruption_time = df[df["eruption_date"] == d]["time_min"].max()
-
-        fig2.add_shape(
-            type="line", x0=eruption_time, x1=eruption_time, y0=0, y1=1,
-            xref="x", yref="paper", line=dict(width=4)
-        )
-
-        fig2.add_annotation(
-            x=eruption_time, y=1, yref="paper",
-            text=d.strftime("%d/%m/%Y"),
-            showarrow=False, bgcolor="black",
-            font=dict(color="white", size=12),
-            yanchor="bottom"
-        )
-
-    fig2.update_layout(height=600, title="Activité moyenne par éruption")
-    st.plotly_chart(fig2, use_container_width=True)
-
+# Alertes
+if st.session_state.get("rt_running", False):
+    st.sidebar.warning("Téléchargement et prédiction en cours… patience !")
+elif st.session_state.last_ml_risk is not None:
+    if valeur_actuelle < 30:
+        st.sidebar.success("Risque très faible — Activité sismique normale")
+    elif valeur_actuelle < 60:
+        st.sidebar.warning("Risque modéré — Augmentation de l'activité sismique")
+    elif valeur_actuelle < 80:
+        st.sidebar.error("Risque élevé — Phase pré-éruptive détectée")
+    else:
+        st.sidebar.error("Risque très élevé — Éruption probable dans les prochaines heures")
 else:
-    st.warning("Aucune station sélectionnée.")
->>>>>>> 77fcfea4f4746704ed5b1475acd7b0adc8553c11
+    st.sidebar.info("En attente de données… Veuillez mettre à jour les données dans le menu ci-dessous.")
+
+# =============================================================
+# MENU TEMPS RÉEL 24H
+# =============================================================
+st.sidebar.markdown("---")
+st.sidebar.subheader("Mise à jour temps réel (24h)")
+
+choix_rapide = st.sidebar.radio(
+    "Choix rapide",
+    ["Toutes", "Personnalisé"],
+    horizontal=True,
+    index=1
+)
+
+if choix_rapide == "Toutes":
+    st.session_state.selected_stations = [s for s in ALL_STATIONS if s not in BAD_STATIONS_REALTIME]
+else:
+    sélection = st.sidebar.multiselect(
+        "Stations à télécharger",
+        options=ALL_STATIONS,
+        default=RECOMMENDED
+    )
+    st.session_state.selected_stations = [s for s in sélection if s not in BAD_STATIONS_REALTIME]
+
+st.sidebar.markdown(f"**{len(st.session_state.selected_stations)} stations sélectionnées.**")
+
+if st.sidebar.button("Actualiser données 24h + Prédiction ML", type="primary", use_container_width=True):
+    start_realtime_update()
+
+run_realtime_update()
+
+# =============================================================
+# CARTE INTERACTIVE
+# =============================================================
+st.markdown("### Stations sismiques sélectionnées pour l'étude des éruptions passées")
+
+éruption_carte = st.selectbox(
+    "Sélectionnez la date d'une éruption passée",
+    options=list(eruptions.keys()),
+    index=list(eruptions.keys()).index(st.session_state.selected_eruption_map)
+)
+st.session_state.selected_eruption_map = éruption_carte
+
+carte = create_station_map(éruption_carte)
+st_folium(carte, width="100%", height=530)
+
+# =============================================================
+# GRAPHIQUES HISTORIQUES
+# =============================================================
+st.sidebar.markdown("---")
+st.sidebar.subheader("Comparaison des éruptions passées")
+
+éruptions_sélectionnées = st.sidebar.multiselect(
+    "Éruptions",
+    options=list(eruptions.keys()),
+    default=list(eruptions.keys())[:6],
+    key="selected_eruptions"
+)
+
+stations_historiques = st.sidebar.multiselect(
+    "Stations (graphiques historiques)",
+    options=list(station_coords.keys()),
+    default=list(station_coords.keys()),
+    key="stations_historiques"
+)
+
+show_graphics(éruptions_sélectionnées)
+
+# =============================================================
+# PIED DE PAGE
+# =============================================================
+st.markdown("---")
+st.success("**Piton de la Fournaise – Real-time Volcano Monitoring System**")
+st.caption("© David, Gabriel, Emmeline & Mathias | Jedha Fullstack 2025 | DSFS-FT-36")
